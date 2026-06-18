@@ -39,8 +39,19 @@ export const ControlPanel: React.FC = () => {
     setGuidanceScale,
     seed,
     setSeed,
+    enableHD,
+    setEnableHD,
   } = useSettingsStore();
-  const { tokens, openaiConfig, googleConfig } = useConfigStore();
+  const {
+    tokens,
+    openaiConfig,
+    googleConfig,
+    agnesConfig,
+    openaiImagenConfig,
+    googleImagenConfig,
+    openaiUseImagenMode,
+    googleUseImagenMode,
+  } = useConfigStore();
 
   const toPascalCaseWithSpace = (str: string) => {
     if (!str) return "";
@@ -123,26 +134,45 @@ export const ControlPanel: React.FC = () => {
         }
 
         // OpenAI (Only if token exists)
-        if (tokens.openai && tokens.openai.length > 0 && openaiConfig.modelId) {
+        const openaiModelId = openaiUseImagenMode
+          ? openaiImagenConfig.modelId
+          : openaiConfig.modelId;
+        if (tokens.openai && tokens.openai.length > 0 && openaiModelId) {
           groups.push({
             label: "OpenAI",
             options: [
               {
-                label: toPascalCaseWithSpace(openaiConfig.modelId),
-                value: `openai:${openaiConfig.modelId}`,
+                label: toPascalCaseWithSpace(openaiModelId),
+                value: "openai:default",
               },
             ],
           });
         }
 
         // Google (Only if token exists)
-        if (tokens.google && tokens.google.length > 0 && googleConfig.modelId) {
+        const googleModelId = googleUseImagenMode
+          ? googleImagenConfig.modelId
+          : googleConfig.modelId;
+        if (tokens.google && tokens.google.length > 0 && googleModelId) {
           groups.push({
             label: "Google",
             options: [
               {
-                label: toPascalCaseWithSpace(googleConfig.modelId),
-                value: `google:${googleConfig.modelId}`,
+                label: toPascalCaseWithSpace(googleModelId),
+                value: "google:default",
+              },
+            ],
+          });
+        }
+
+        // Agnes AI (Only if token exists)
+        if (tokens.agnes && tokens.agnes.length > 0 && agnesConfig.modelId) {
+          groups.push({
+            label: "Agnes AI",
+            options: [
+              {
+                label: toPascalCaseWithSpace(agnesConfig.modelId),
+                value: "agnes:default",
               },
             ],
           });
@@ -173,7 +203,17 @@ export const ControlPanel: React.FC = () => {
     // Listen for storage changes to update list dynamically (e.g. after adding token in settings)
     window.addEventListener("storage", updateModelOptions);
     return () => window.removeEventListener("storage", updateModelOptions);
-  }, [t, tokens, openaiConfig, googleConfig]);
+  }, [
+    t,
+    tokens,
+    openaiConfig,
+    googleConfig,
+    agnesConfig,
+    openaiImagenConfig,
+    googleImagenConfig,
+    openaiUseImagenMode,
+    googleUseImagenMode,
+  ]);
 
   // Determine current model configuration (Standard or Custom)
   const activeConfig = useMemo(() => {
@@ -246,7 +286,10 @@ export const ControlPanel: React.FC = () => {
   };
 
   // Construct current value for Select
-  const currentSelectValue = `${provider}:${model}`;
+  const currentSelectValue =
+    provider === "openai" || provider === "google" || provider === "agnes"
+      ? `${provider}:default`
+      : `${provider}:${model}`;
 
   return (
     <div className="space-y-4 md:space-y-6">
@@ -257,6 +300,24 @@ export const ControlPanel: React.FC = () => {
         onChange={onModelChange}
         options={modelOptions}
         icon={<Cpu className="w-5 h-5" />}
+        headerContent={
+          (provider === "openai" || provider === "google") && (
+            <div className="flex items-center gap-2 animate-in fade-in duration-300">
+              <span className="text-xs font-medium text-white/50">{t.hd}</span>
+              <Tooltip content={enableHD ? t.hdEnabled : t.hdDisabled}>
+                <button
+                  type="button"
+                  onClick={() => setEnableHD(!enableHD)}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-purple-500/50 ${enableHD ? "bg-purple-600" : "bg-white/10"}`}
+                >
+                  <span
+                    className={`${enableHD ? "translate-x-4" : "translate-x-1"} inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform`}
+                  />
+                </button>
+              </Tooltip>
+            </div>
+          )
+        }
       />
 
       {/* Aspect Ratio */}

@@ -20,8 +20,19 @@ import {
   optimizePrompt as optimizePromptHF,
 } from "../services/hfService";
 import { generateA4FImage, optimizePromptA4F } from "../services/a4fService";
-import { generateOpenAIImage } from "../services/openaiService";
-import { generateGoogleImage } from "../services/googleService";
+import {
+  generateOpenAIImage,
+  generateOpenAIImagenImage,
+} from "../services/openaiService";
+import {
+  generateGoogleImage,
+  generateGoogleImagenImage,
+} from "../services/googleService";
+import {
+  generateAgnesImage,
+  generateAgnesVideo,
+  optimizePromptAgnes,
+} from "../services/agnesService";
 import {
   generateCustomImage,
   generateCustomVideo,
@@ -39,6 +50,7 @@ import {
   convertBlobToPng,
   addToPromptHistory,
 } from "../services/utils";
+import { getDefaultModelParams } from "../services/modelUtils";
 import { saveTempFileToOPFS } from "../services/storageService";
 import { resolveErrorMessage } from "../services/errorUtils";
 import {
@@ -46,10 +58,10 @@ import {
   GITEE_MODEL_OPTIONS,
   MS_MODEL_OPTIONS,
   A4F_MODEL_OPTIONS,
-  getModelConfig,
   getGuidanceScaleConfig,
   LIVE_MODELS,
 } from "../constants";
+import { useConfigStore } from "../store/configStore";
 
 /**
  * Hook that encapsulates all image/video generation logic for CreationView.
@@ -68,7 +80,7 @@ export const useCreationGeneration = () => {
     guidanceScale,
     setGuidanceScale,
     autoTranslate,
-    resetSettings,
+    resetImagineParams,
   } = useSettingsStore();
 
   const {
@@ -81,6 +93,13 @@ export const useCreationGeneration = () => {
     imageDimensions,
     setImageDimensions,
   } = useUIStore();
+
+  const openaiUseImagenMode = useConfigStore(
+    (state) => state.openaiUseImagenMode,
+  );
+  const googleUseImagenMode = useConfigStore(
+    (state) => state.googleUseImagenMode,
+  );
 
   const currentImage = useCurrentImage();
   const setCurrentImage = useSetCurrentImage();
@@ -116,7 +135,7 @@ export const useCreationGeneration = () => {
       const seedNumber = seed.trim() === "" ? undefined : parseInt(seed, 10);
       const gsConfig = getGuidanceScaleConfig(model, provider);
       const currentGuidanceScale = gsConfig ? guidanceScale : undefined;
-      const requestHD = true;
+      const requestHD = useSettingsStore.getState().enableHD;
 
       let result;
       if (provider === "gitee") {
@@ -160,18 +179,49 @@ export const useCreationGeneration = () => {
           currentGuidanceScale,
         );
       } else if (provider === "openai") {
-        result = await generateOpenAIImage(
-          model,
-          finalPrompt,
-          aspectRatio,
-          seedNumber,
-          steps,
-          requestHD,
-          currentGuidanceScale,
-        );
+        if (openaiUseImagenMode) {
+          result = await generateOpenAIImagenImage(
+            "default",
+            finalPrompt,
+            aspectRatio,
+            requestHD,
+            seedNumber,
+          );
+        } else {
+          result = await generateOpenAIImage(
+            "default",
+            finalPrompt,
+            aspectRatio,
+            seedNumber,
+            steps,
+            requestHD,
+            currentGuidanceScale,
+          );
+        }
       } else if (provider === "google") {
-        result = await generateGoogleImage(
-          model,
+        if (googleUseImagenMode) {
+          result = await generateGoogleImagenImage(
+            "default",
+            finalPrompt,
+            aspectRatio,
+            requestHD,
+            seedNumber,
+            currentGuidanceScale,
+          );
+        } else {
+          result = await generateGoogleImage(
+            "default",
+            finalPrompt,
+            aspectRatio,
+            seedNumber,
+            steps,
+            requestHD,
+            currentGuidanceScale,
+          );
+        }
+      } else if (provider === "agnes") {
+        result = await generateAgnesImage(
+          "default",
           finalPrompt,
           aspectRatio,
           seedNumber,
@@ -270,6 +320,8 @@ export const useCreationGeneration = () => {
         optimized = await optimizePromptA4F(prompt, config.model);
       else if (config.provider === "huggingface")
         optimized = await optimizePromptHF(prompt, config.model);
+      else if (config.provider === "agnes")
+        optimized = await optimizePromptAgnes(prompt, config.model);
       else {
         const customProviders = getCustomProviders();
         const activeProvider = customProviders.find(
@@ -379,6 +431,7 @@ export const useCreationGeneration = () => {
         ...currentImage,
         videoStatus: "generating",
         videoProvider: currentVideoProvider,
+        videoTimestamp: Date.now(),
       } as GeneratedImage;
       setCurrentImage(loadingImage);
       setHistory((prev) =>
@@ -420,6 +473,42 @@ export const useCreationGeneration = () => {
         );
         if (useUIStore.getState().currentImageId === successImage.id)
           setIsLiveMode(true);
+      } else if (currentVideoProvider === "agnes") {
+        const settings = getVideoSettings(currentVideoProvider);
+        // Agnes requires the input frame as a public URL or Data URI Base64.
+        const blob =
+          typeof imageInput === "string"
+            ? await fetchBlob(imageInput)
+            : imageInput;
+        const imageDataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+
+        const result = await generateAgnesVideo(
+          liveConfig.model,
+          imageDataUrl,
+          settings.prompt,
+          settings.duration,
+          currentImage.seed ?? 42,
+          24,
+          width,
+          height,
+        );
+        const taskId = result.videoId || result.taskId;
+        if (!taskId) throw new Error("Invalid response from video provider");
+        const nextPollTime = Date.now() + 30 * 1000;
+        const taskedImage = {
+          ...loadingImage,
+          videoTaskId: taskId,
+          videoNextPollTime: nextPollTime,
+        } as GeneratedImage;
+        setCurrentImage(taskedImage);
+        setHistory((prev) =>
+          prev.map((img) => (img.id === taskedImage.id ? taskedImage : img)),
+        );
       } else {
         const activeProvider = customProviders.find(
           (p) => p.id === currentVideoProvider,
@@ -502,7 +591,7 @@ export const useCreationGeneration = () => {
 
   // --- Reset ---
   const handleReset = () => {
-    resetSettings();
+    resetImagineParams();
     let newModel = model;
 
     if (provider === "gitee")
@@ -526,41 +615,7 @@ export const useCreationGeneration = () => {
 
     setModel(newModel);
 
-    let defaultSteps = 9;
-    let defaultGs = 7.5;
-    let hasGs = false;
-
-    const customProviders = getCustomProviders();
-    const activeCustom = customProviders.find((p) => p.id === provider);
-
-    if (activeCustom) {
-      const customModel = activeCustom.models.generate?.find(
-        (m) => m.id === newModel,
-      );
-      if (customModel) {
-        if (customModel.steps) defaultSteps = customModel.steps.default;
-        if (customModel.guidance) {
-          hasGs = true;
-          defaultGs = customModel.guidance.default;
-        }
-      } else {
-        const fallback = getModelConfig(provider, newModel);
-        defaultSteps = fallback.default;
-        const fallbackGs = getGuidanceScaleConfig(newModel, provider);
-        if (fallbackGs) {
-          hasGs = true;
-          defaultGs = fallbackGs.default;
-        }
-      }
-    } else {
-      const config = getModelConfig(provider, newModel);
-      defaultSteps = config.default;
-      const gsConfig = getGuidanceScaleConfig(newModel, provider);
-      if (gsConfig) {
-        hasGs = true;
-        defaultGs = gsConfig.default;
-      }
-    }
+    const { defaultSteps, defaultGs, hasGs } = getDefaultModelParams(provider, newModel);
 
     setSteps(defaultSteps);
     if (hasGs) {
